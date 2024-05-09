@@ -1,20 +1,25 @@
 package s3
 
 import (
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/client"
 	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/defaults"
+	"github.com/aws/aws-sdk-go/aws/endpoints"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/pkg/errors"
 	"github.com/wal-g/tracelog"
 )
@@ -92,7 +97,24 @@ func getFirstSettingOf(settings map[string]string, keys []string) string {
 	return ""
 }
 
-func configWithSettings(config *aws.Config, bucket string, settings map[string]string) (*aws.Config, error) {
+type envEndpointResolver struct {
+	EndpointsMap map[string]string
+}
+
+func (r envEndpointResolver) EndpointFor(
+	service string,
+	region string,
+	opts ...func(*endpoints.Options),
+) (endpoints.ResolvedEndpoint, error) {
+	if url, ok := r.EndpointsMap[service]; ok {
+		return endpoints.ResolvedEndpoint{URL: url}, nil
+	} else {
+		return endpoints.DefaultResolver().EndpointFor(
+			service, region, opts...)
+	}
+}
+
+func configWithSettings(s *session.Session, bucket string, settings map[string]string) (*aws.Config, error) {
 	// DefaultRetryer implements basic retry logic using exponential backoff for
 	// most services. If you want to implement custom retry logic, you can implement the
 	// request.Retryer interface.
@@ -105,11 +127,16 @@ func configWithSettings(config *aws.Config, bucket string, settings map[string]s
 
 		maxRetriesCount = maxRetriesInt
 	}
+	config := s.Config
 	config = request.WithRetryer(config, NewConnResetRetryer(client.DefaultRetryer{NumMaxRetries: maxRetriesCount}))
 
 	accessKeyId := getFirstSettingOf(settings, []string{AccessKeyIdSetting, AccessKeySetting})
 	secretAccessKey := getFirstSettingOf(settings, []string{SecretAccessKeySetting, SecretKeySetting})
 	sessionToken := settings[SessionTokenSetting]
+
+	roleArn := settings[RoleARN]
+	sessionName := settings[SessionName]
+
 	if accessKeyId != "" && secretAccessKey != "" {
 		provider := &credentials.StaticProvider{Value: credentials.Value{
 			AccessKeyID:     accessKeyId,
@@ -138,8 +165,20 @@ func configWithSettings(config *aws.Config, bucket string, settings map[string]s
 		}(logLevel))
 	}
 
-	if endpoint, ok := settings[EndpointSetting]; ok {
-		config = config.WithEndpoint(endpoint)
+	if endpointsEnv, ok := settings[EndpointsSetting]; ok {
+		endpointsMap := make(map[string]string)
+		err := json.Unmarshal([]byte(endpointsEnv), &endpointsMap)
+		if err != nil {
+			tracelog.WarningLogger.Printf(
+				"could not parse the AWS_ENDPOINTS environment variable: %s", err)
+		}
+
+		endpointResolver := envEndpointResolver{EndpointsMap: endpointsMap}
+		config = config.WithEndpointResolver(endpointResolver)
+	} else {
+		if endpoint, ok := settings[EndpointSetting]; ok {
+			config = config.WithEndpoint(endpoint)
+		}
 	}
 
 	if s3ForcePathStyleStr, ok := settings[ForcePathStyleSetting]; ok {
@@ -156,6 +195,32 @@ func configWithSettings(config *aws.Config, bucket string, settings map[string]s
 	}
 	config = config.WithRegion(region)
 
+	if roleArn != "" {
+		tracelog.InfoLogger.Printf("calling AssumeRole(%s)", roleArn)
+		sess, err := session.NewSession(config)
+		if err != nil {
+			tracelog.ErrorLogger.Printf("could not create AWS session: %s", err)
+			return nil, err
+		}
+		stsClient := sts.New(sess)
+		credentials := stscreds.NewCredentialsWithClient(
+			stsClient,
+			roleArn,
+			func(arp *stscreds.AssumeRoleProvider) {
+				arp.Duration = 15 * time.Minute
+				arp.ExpiryWindow = 5 * time.Minute
+				arp.RoleSessionName = sessionName
+			},
+		)
+		_, err = credentials.Get()
+		if err != nil {
+			tracelog.ErrorLogger.Printf("could not assume AWS role: %s", err)
+			return nil, err
+		}
+
+		config = config.WithCredentials(credentials)
+	}
+
 	return config, nil
 }
 
@@ -166,7 +231,7 @@ func createSession(bucket string, settings map[string]string) (*session.Session,
 		return nil, err
 	}
 
-	c, err := configWithSettings(s.Config, bucket, settings)
+	c, err := configWithSettings(s, bucket, settings)
 	if err != nil {
 		return nil, err
 	}

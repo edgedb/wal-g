@@ -20,6 +20,7 @@ const (
 	NoSuchKeyAWSErrorCode = "NoSuchKey"
 
 	EndpointSetting          = "AWS_ENDPOINT"
+	EndpointsSetting         = "AWS_ENDPOINTS"
 	RegionSetting            = "AWS_REGION"
 	ForcePathStyleSetting    = "AWS_S3_FORCE_PATH_STYLE"
 	AccessKeyIdSetting       = "AWS_ACCESS_KEY_ID"
@@ -27,6 +28,8 @@ const (
 	SecretAccessKeySetting   = "AWS_SECRET_ACCESS_KEY"
 	SecretKeySetting         = "AWS_SECRET_KEY"
 	SessionTokenSetting      = "AWS_SESSION_TOKEN"
+	SessionName              = "AWS_ROLE_SESSION_NAME"
+	RoleARN                  = "AWS_ROLE_ARN"
 	S3UseYcSessionToken      = "S3_USE_YC_SESSION_TOKEN"
 	SseSetting               = "S3_SSE"
 	SseCSetting              = "S3_SSE_C"
@@ -57,6 +60,7 @@ var (
 	SettingList = []string{
 		EndpointPortSetting,
 		EndpointSetting,
+		EndpointsSetting,
 		EndpointSourceSetting,
 		RegionSetting,
 		ForcePathStyleSetting,
@@ -65,6 +69,8 @@ var (
 		SecretAccessKeySetting,
 		SecretKeySetting,
 		SessionTokenSetting,
+		SessionName,
+		RoleARN,
 		S3UseYcSessionToken,
 		SseSetting,
 		SseCSetting,
