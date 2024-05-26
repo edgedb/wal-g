@@ -43,7 +43,7 @@ wal-g st get "basebackups_005/${FIRST_BACKUP}/stream.br" stream.xb
 
 cat <<EOF
 ##########
-# test `xb extract` without decompression
+# test "xb extract" without decompression
 ##########
 EOF
 mkdir -p wout
@@ -60,7 +60,7 @@ rm -rf wout xout
 
 cat <<EOF
 ##########
-# test `xb extract` with --decompress
+# test "xb extract" with --decompress
 ##########
 EOF
 mkdir -p wout
