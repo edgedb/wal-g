@@ -26,7 +26,7 @@ mysql -e "CREATE TABLE sbtest.mytest (id int NOT NULL AUTO_INCREMENT, val varcha
 mysql -e "INSERT INTO sbtest.mytest(val) VALUES ('aaa')"
 mysql -e "INSERT INTO sbtest.mytest(val) VALUES ('bbb')"
 for run in {1..19}; do
-  mysql -e "INSERT INTO sbtest.mytest(val) (SELECT a.val + b.val FROM sbtest.mytest as a cross join sbtest.mytest as b )"
+  mysql -e "INSERT INTO sbtest.mytest(val) (SELECT concat(a.val, b.val) FROM sbtest.mytest as a cross join sbtest.mytest as b )"
 done
 sleep 1
 
