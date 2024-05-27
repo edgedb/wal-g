@@ -25,7 +25,7 @@ sysbench --time=15 run
 mysql -e "CREATE TABLE sbtest.mytest (id int NOT NULL AUTO_INCREMENT, val varchar(80) DEFAULT NULL, PRIMARY KEY (id)) ENGINE=InnoDB COMPRESSION='zlib'"
 mysql -e "INSERT INTO sbtest.mytest(val) VALUES ('aaa')"
 mysql -e "INSERT INTO sbtest.mytest(val) VALUES ('bbb')"
-for run in {1..19}; do
+for i in $(seq 1 19); do
   mysql -e "INSERT INTO sbtest.mytest(val) (SELECT concat(a.val, b.val) FROM sbtest.mytest as a cross join sbtest.mytest as b )"
 done
 sleep 1
@@ -47,11 +47,11 @@ cat <<EOF
 ##########
 EOF
 mkdir -p wout
-time wal-g xb extract stream.xb wout/
+wal-g xb extract stream.xb wout/
 find wout -type f | sort -u | xargs cat | md5sum > wout.sum
 
 mkdir -p xout
-time cat stream.xb | xbstream -x -C xout
+cat stream.xb | xbstream -x -C xout
 find wout -type f | sort -u | xargs cat | md5sum > xout.sum
 
 diff wout.sum xout.sum
@@ -64,11 +64,11 @@ cat <<EOF
 ##########
 EOF
 mkdir -p wout
-time wal-g xb extract stream.xb wout/ --decompress
+wal-g xb extract stream.xb wout/ --decompress
 find wout -type f | sort -u | xargs cat | md5sum > wout.sum
 
 mkdir -p xout
-time cat stream.xb | xbstream -x -C xout --decompress
+cat stream.xb | xbstream -x -C xout --decompress
 find wout -type f | sort -u | xargs cat | md5sum > xout.sum
 
 diff wout.sum xout.sum
