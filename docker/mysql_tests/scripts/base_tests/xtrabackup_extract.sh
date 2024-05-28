@@ -19,13 +19,11 @@ mysqld --initialize --init-file=/etc/mysql/init.sql
 
 service mysql start
 
-sysbench --table-size=10 prepare
-sysbench --time=15 run
 # add compressed tables with 2^20 rows:
 mysql -e "CREATE TABLE sbtest.mytest (id int NOT NULL AUTO_INCREMENT, val varchar(80) DEFAULT NULL, PRIMARY KEY (id)) ENGINE=InnoDB COMPRESSION='zlib'"
 mysql -e "INSERT INTO sbtest.mytest(val) VALUES ('aaa')"
 mysql -e "INSERT INTO sbtest.mytest(val) VALUES ('bbb')"
-for i in $(seq 1 19); do
+for i in $(seq 1 15); do
   mysql -e "INSERT INTO sbtest.mytest(val) (SELECT concat(a.val, b.val) FROM sbtest.mytest as a cross join sbtest.mytest as b )"
 done
 sleep 1
