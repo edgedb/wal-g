@@ -50,7 +50,7 @@ func NewMockUploader(apiMultiErr, apiErr bool) *internal.Uploader {
 	s3Uploader := MakeDefaultUploader(NewMockS3Uploader(apiMultiErr, apiErr, nil))
 	return internal.NewUploader(
 		&MockCompressor{},
-		s3.NewFolder(*s3Uploader, NewMockS3Client(false, true), map[string]string{}, "bucket/", "server/", false),
+		s3.NewFolder(*s3Uploader, NewMockS3Client(false, true), map[string]string{}, "bucket/", "server/", nil, false),
 	)
 }
 
@@ -65,7 +65,7 @@ func NewMockWalUploader(apiMultiErr, apiErr bool) *postgres.WalUploader {
 	s3Uploader := MakeDefaultUploader(NewMockS3Uploader(apiMultiErr, apiErr, nil))
 	return postgres.NewWalUploader(
 		&MockCompressor{},
-		s3.NewFolder(*s3Uploader, NewMockS3Client(false, true), map[string]string{}, "bucket/", "server/", false),
+		s3.NewFolder(*s3Uploader, NewMockS3Client(false, true), map[string]string{}, "bucket/", "server/", nil, false),
 		nil,
 	)
 }
@@ -366,16 +366,16 @@ var ErrorMockClose = errors.New("mock close: close error")
 var ErrorMockRead = errors.New("mock reader: read error")
 var ErrorMockWrite = errors.New("mock writer: write error")
 
-//ErrorWriter struct implements io.Writer interface.
-//Its Write method returns zero and non-nil error on every call
+// ErrorWriter struct implements io.Writer interface.
+// Its Write method returns zero and non-nil error on every call
 type ErrorWriter struct{}
 
 func (w ErrorWriter) Write(b []byte) (int, error) {
 	return 0, ErrorMockWrite
 }
 
-//ErrorReader struct implements io.Reader interface.
-//Its Read method returns zero and non-nil error on every call
+// ErrorReader struct implements io.Reader interface.
+// Its Read method returns zero and non-nil error on every call
 type ErrorReader struct{}
 
 func (r ErrorReader) Read(b []byte) (int, error) {

@@ -302,6 +302,8 @@ var (
 		"S3_RANGE_MAX_RETRIES":        true,
 		"S3_MAX_RETRIES":              true,
 
+		"WALG_S3_BACKING_KEY_PREFIXES": true,
+
 		// Azure
 		"WALG_AZ_PREFIX":           true,
 		"AZURE_STORAGE_ACCOUNT":    true,

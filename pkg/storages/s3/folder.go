@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/pkg/errors"
+	"github.com/wal-g/tracelog"
 	"github.com/wal-g/wal-g/pkg/storages/storage"
 )
 
@@ -35,6 +36,7 @@ const (
 	SseCSetting              = "S3_SSE_C"
 	SseKmsIdSetting          = "S3_SSE_KMS_ID"
 	StorageClassSetting      = "S3_STORAGE_CLASS"
+	BackingPrefixes          = "S3_BACKING_KEY_PREFIXES"
 	UploadConcurrencySetting = "UPLOAD_CONCURRENCY"
 	s3CertFile               = "S3_CA_CERT_FILE"
 	MaxPartSize              = "S3_MAX_PART_SIZE"
@@ -84,6 +86,7 @@ var (
 		RangeBatchEnabled,
 		RangeQueriesMaxRetries,
 		MaxRetriesSetting,
+		BackingPrefixes,
 	}
 )
 
@@ -103,16 +106,19 @@ type Folder struct {
 	Path     string
 	settings map[string]string
 
+	BackingPaths []string
+
 	useListObjectsV1 bool
 }
 
-func NewFolder(uploader Uploader, s3API s3iface.S3API, settings map[string]string, bucket, path string, useListObjectsV1 bool) *Folder {
+func NewFolder(uploader Uploader, s3API s3iface.S3API, settings map[string]string, bucket, path string, backingPaths []string, useListObjectsV1 bool) *Folder {
 	return &Folder{
 		uploader:         uploader,
 		S3API:            s3API,
 		settings:         settings,
 		Bucket:           aws.String(bucket),
 		Path:             storage.AddDelimiterToPath(path),
+		BackingPaths:     backingPaths,
 		useListObjectsV1: useListObjectsV1,
 	}
 }
@@ -139,26 +145,60 @@ func ConfigureFolder(prefix string, settings map[string]string) (storage.Folder,
 		}
 	}
 
-	folder := NewFolder(*uploader, client, settings, bucket, storagePath, useListObjectsV1)
+	backingPaths := make([]string, 0)
+	if backingPrefixList, ok := settings[BackingPrefixes]; ok {
+		for _, prefix := range strings.Split(backingPrefixList, ",") {
+			backingPaths = append(backingPaths, storage.AddDelimiterToPath(prefix))
+		}
+	}
+
+	folder := NewFolder(
+		*uploader,
+		client,
+		settings,
+		bucket,
+		storagePath,
+		backingPaths,
+		useListObjectsV1,
+	)
 
 	return folder, nil
 }
 
-func (folder *Folder) Exists(objectRelativePath string) (bool, error) {
-	objectPath := folder.Path + objectRelativePath
-	stopSentinelObjectInput := &s3.HeadObjectInput{
-		Bucket: folder.Bucket,
-		Key:    aws.String(objectPath),
+func (folder *Folder) find(objectRelativePath string) (string, error) {
+	candidatePrefixes := append([]string{folder.Path}, folder.BackingPaths...)
+
+	for _, prefix := range candidatePrefixes {
+		objectPath := prefix + objectRelativePath
+		stopSentinelObjectInput := &s3.HeadObjectInput{
+			Bucket: folder.Bucket,
+			Key:    aws.String(objectPath),
+		}
+
+		_, err := folder.S3API.HeadObject(stopSentinelObjectInput)
+		if err != nil {
+			if isAwsNotExist(err) {
+				continue
+			} else {
+				return "", errors.Wrapf(err, "failed to check s3 object '%s' existance", objectPath)
+			}
+		} else {
+			return prefix, nil
+		}
 	}
 
-	_, err := folder.S3API.HeadObject(stopSentinelObjectInput)
+	return "", nil
+}
+
+func (folder *Folder) Exists(objectRelativePath string) (bool, error) {
+	prefix, err := folder.find(objectRelativePath)
 	if err != nil {
-		if isAwsNotExist(err) {
-			return false, nil
-		}
-		return false, errors.Wrapf(err, "failed to check s3 object '%s' existance", objectPath)
+		return false, err
+	} else if prefix == "" {
+		return false, nil
+	} else {
+		return true, nil
 	}
-	return true, nil
 }
 
 func (folder *Folder) PutObject(name string, content io.Reader) error {
@@ -166,17 +206,19 @@ func (folder *Folder) PutObject(name string, content io.Reader) error {
 }
 
 func (folder *Folder) CopyObject(srcPath string, dstPath string) error {
-	if exists, err := folder.Exists(srcPath); !exists {
+
+	prefix, err := folder.find(srcPath)
+	if prefix == "" {
 		if err == nil {
 			return errors.New("object does not exist")
 		} else {
 			return err
 		}
 	}
-	source := path.Join(*folder.Bucket, folder.Path, srcPath)
+	source := path.Join(*folder.Bucket, prefix, srcPath)
 	dst := path.Join(folder.Path, dstPath)
 	input := &s3.CopyObjectInput{CopySource: &source, Bucket: folder.Bucket, Key: &dst}
-	_, err := folder.S3API.CopyObject(input)
+	_, err = folder.S3API.CopyObject(input)
 	if err != nil {
 		return err
 	}
@@ -184,18 +226,38 @@ func (folder *Folder) CopyObject(srcPath string, dstPath string) error {
 }
 
 func (folder *Folder) ReadObject(objectRelativePath string) (io.ReadCloser, error) {
-	objectPath := folder.Path + objectRelativePath
-	input := &s3.GetObjectInput{
-		Bucket: folder.Bucket,
-		Key:    aws.String(objectPath),
+	candidatePrefixes := append([]string{folder.Path}, folder.BackingPaths...)
+
+	var object *s3.GetObjectOutput
+	var objectPath string
+	var err error
+
+	tracelog.DebugLogger.Printf("ReadObject: %s", objectRelativePath)
+
+	for _, prefix := range candidatePrefixes {
+		objectPath = prefix + objectRelativePath
+		input := &s3.GetObjectInput{
+			Bucket: folder.Bucket,
+			Key:    aws.String(objectPath),
+		}
+
+		tracelog.DebugLogger.Printf("calling S3.GetObject(%s)", objectPath)
+		object, err = folder.S3API.GetObject(input)
+		if err != nil {
+			if isAwsNotExist(err) {
+				tracelog.DebugLogger.Printf("S3 object %q does not exist", objectPath)
+				object = nil
+				continue
+			} else {
+				return nil, errors.Wrapf(err, "failed to read object: '%s' from S3", objectPath)
+			}
+		} else {
+			break
+		}
 	}
 
-	object, err := folder.S3API.GetObject(input)
-	if err != nil {
-		if isAwsNotExist(err) {
-			return nil, storage.NewObjectNotFoundError(objectPath)
-		}
-		return nil, errors.Wrapf(err, "failed to read object: '%s' from S3", objectPath)
+	if object == nil {
+		return nil, storage.NewObjectNotFoundError(objectPath)
 	}
 
 	rangeEnabled, maxRetries, minRetryDelay, maxRetryDelay := folder.getReaderSettings()
@@ -235,8 +297,14 @@ func (folder *Folder) getReaderSettings() (rangeEnabled bool, retriesCount int, 
 }
 
 func (folder *Folder) GetSubFolder(subFolderRelativePath string) storage.Folder {
+	backingPaths := make([]string, len(folder.BackingPaths))
+	for i, backingPath := range folder.BackingPaths {
+		backingPaths[i] = storage.JoinPath(backingPath, subFolderRelativePath) + "/"
+	}
 	subFolder := NewFolder(folder.uploader, folder.S3API, folder.settings, *folder.Bucket,
-		storage.JoinPath(folder.Path, subFolderRelativePath)+"/", folder.useListObjectsV1)
+		storage.JoinPath(folder.Path, subFolderRelativePath)+"/",
+		backingPaths,
+		folder.useListObjectsV1)
 	return subFolder
 }
 
@@ -245,30 +313,54 @@ func (folder *Folder) GetPath() string {
 }
 
 func (folder *Folder) ListFolder() (objects []storage.Object, subFolders []storage.Folder, err error) {
-	listFunc := func(commonPrefixes []*s3.CommonPrefix, contents []*s3.Object) {
+	objectMap := make(map[string]*storage.LocalObject)
+	subfolderMap := make(map[string]*Folder)
+
+	listFunc := func(prefix *string, commonPrefixes []*s3.CommonPrefix, contents []*s3.Object) {
 		for _, prefix := range commonPrefixes {
+			relativePrefix := strings.TrimPrefix(*prefix.Prefix, folder.Path)
+			if _, ok := subfolderMap[relativePrefix]; ok {
+				continue
+			}
+
+			backingPaths := make([]string, len(folder.BackingPaths))
+			for i, backingPath := range folder.BackingPaths {
+				backingPaths[i] = storage.JoinPath(backingPath, relativePrefix) + "/"
+			}
 			subFolder := NewFolder(folder.uploader, folder.S3API, folder.settings, *folder.Bucket,
-				*prefix.Prefix, folder.useListObjectsV1)
-			subFolders = append(subFolders, subFolder)
+				*prefix.Prefix, backingPaths, folder.useListObjectsV1)
+			subfolderMap[relativePrefix] = subFolder
 		}
 		for _, object := range contents {
 			// Some storages return root tar_partitions folder as a Key.
 			// We do not want to fail restoration due to this fact.
 			// Keep in mind that skipping files is very dangerous and any decision here must be weighted.
-			if *object.Key == folder.Path {
+			if *object.Key == *prefix {
 				continue
 			}
-			objectRelativePath := strings.TrimPrefix(*object.Key, folder.Path)
-			objects = append(objects, storage.NewLocalObject(objectRelativePath, *object.LastModified, *object.Size))
+			objectRelativePath := strings.TrimPrefix(*object.Key, *prefix)
+			if _, ok := objectMap[objectRelativePath]; !ok {
+				objectMap[objectRelativePath] = storage.NewLocalObject(objectRelativePath, *object.LastModified, *object.Size)
+			}
 		}
 	}
 
-	prefix := aws.String(folder.Path)
 	delimiter := aws.String("/")
-	if folder.useListObjectsV1 {
-		err = folder.listObjectsPagesV1(prefix, delimiter, listFunc)
-	} else {
-		err = folder.listObjectsPagesV2(prefix, delimiter, listFunc)
+	prefixes := append([]string{folder.Path}, folder.BackingPaths...)
+	for _, prefix := range prefixes {
+		if folder.useListObjectsV1 {
+			err = folder.listObjectsPagesV1(&prefix, delimiter, listFunc)
+		} else {
+			err = folder.listObjectsPagesV2(&prefix, delimiter, listFunc)
+		}
+	}
+
+	for _, subFolder := range subfolderMap {
+		subFolders = append(subFolders, subFolder)
+	}
+
+	for _, object := range objectMap {
+		objects = append(objects, object)
 	}
 
 	if err != nil {
@@ -278,27 +370,27 @@ func (folder *Folder) ListFolder() (objects []storage.Object, subFolders []stora
 }
 
 func (folder *Folder) listObjectsPagesV1(prefix *string, delimiter *string,
-	listFunc func(commonPrefixes []*s3.CommonPrefix, contents []*s3.Object)) error {
+	listFunc func(prefix *string, commonPrefixes []*s3.CommonPrefix, contents []*s3.Object)) error {
 	s3Objects := &s3.ListObjectsInput{
 		Bucket:    folder.Bucket,
 		Prefix:    prefix,
 		Delimiter: delimiter,
 	}
 	return folder.S3API.ListObjectsPages(s3Objects, func(files *s3.ListObjectsOutput, lastPage bool) bool {
-		listFunc(files.CommonPrefixes, files.Contents)
+		listFunc(prefix, files.CommonPrefixes, files.Contents)
 		return true
 	})
 }
 
 func (folder *Folder) listObjectsPagesV2(prefix *string, delimiter *string,
-	listFunc func(commonPrefixes []*s3.CommonPrefix, contents []*s3.Object)) error {
+	listFunc func(prefix *string, commonPrefixes []*s3.CommonPrefix, contents []*s3.Object)) error {
 	s3Objects := &s3.ListObjectsV2Input{
 		Bucket:    folder.Bucket,
 		Prefix:    prefix,
 		Delimiter: delimiter,
 	}
 	return folder.S3API.ListObjectsV2Pages(s3Objects, func(files *s3.ListObjectsV2Output, lastPage bool) bool {
-		listFunc(files.CommonPrefixes, files.Contents)
+		listFunc(prefix, files.CommonPrefixes, files.Contents)
 		return true
 	})
 }
