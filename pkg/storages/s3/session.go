@@ -137,14 +137,29 @@ func configWithSettings(s *session.Session, bucket string, settings map[string]s
 	roleArn := settings[RoleARN]
 	sessionName := settings[SessionName]
 
-	if accessKeyId != "" && secretAccessKey != "" {
-		provider := &credentials.StaticProvider{Value: credentials.Value{
-			AccessKeyID:     accessKeyId,
-			SecretAccessKey: secretAccessKey,
-			SessionToken:    sessionToken,
-		}}
-		providers := make([]credentials.Provider, 0)
-		providers = append(providers, provider)
+	credentialsFile := settings[CredentialsFileSetting]
+
+	providers := make([]credentials.Provider, 0)
+
+	if accessKeyId != "" && secretAccessKey != "" || credentialsFile != "" {
+		if accessKeyId != "" && secretAccessKey != "" {
+			provider := &credentials.StaticProvider{Value: credentials.Value{
+				AccessKeyID:     accessKeyId,
+				SecretAccessKey: secretAccessKey,
+				SessionToken:    sessionToken,
+			}}
+			providers = append(providers, provider)
+		}
+
+		if credentialsFile != "" {
+			provider, err := NewFileCredentialsProvider(credentialsFile)
+			if err != nil {
+				return nil, errors.Wrap(err, "failed to create credentials provider")
+			}
+
+			providers = append(providers, provider)
+		}
+
 		providers = append(providers, defaults.CredProviders(config, defaults.Handlers())...)
 		newCredentials := credentials.NewCredentials(&credentials.ChainProvider{
 			VerboseErrors: aws.BoolValue(config.CredentialsChainVerboseErrors),

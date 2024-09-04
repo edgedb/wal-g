@@ -24,6 +24,7 @@ const (
 	EndpointsSetting         = "AWS_ENDPOINTS"
 	RegionSetting            = "AWS_REGION"
 	ForcePathStyleSetting    = "AWS_S3_FORCE_PATH_STYLE"
+	CredentialsFileSetting   = "AWS_CREDENTIALS_FILE"
 	AccessKeyIdSetting       = "AWS_ACCESS_KEY_ID"
 	AccessKeySetting         = "AWS_ACCESS_KEY"
 	SecretAccessKeySetting   = "AWS_SECRET_ACCESS_KEY"
@@ -66,6 +67,7 @@ var (
 		EndpointSourceSetting,
 		RegionSetting,
 		ForcePathStyleSetting,
+		CredentialsFileSetting,
 		AccessKeyIdSetting,
 		AccessKeySetting,
 		SecretAccessKeySetting,
